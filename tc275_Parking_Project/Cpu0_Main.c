@@ -72,7 +72,7 @@ volatile unsigned int SW_state_cnt;
 volatile unsigned int SW_state_debounce;
 
 volatile unsigned char irq_timer;
-volatile unsigned int count_index;
+volatile unsigned int state_cnt;
 
 IfxCpu_syncEvent g_cpuSyncEvent = 0;
 
@@ -122,7 +122,7 @@ int core0_main(void)
     volatile int system_tick;
 
     init_LED();
-    count_index =1;
+    state_cnt = 0;
     SW1_curr = 0;
     SW1_prev = 0;
     SW1_cnt = 0;
@@ -160,10 +160,17 @@ int core0_main(void)
            SW_state_debounce = SW_state_curr;
 
 
-       if( SW_state_debounce != 0 && SW_state_debounce == 0x03)
+       if(state_cnt == 0)
        {
-          while(1)
-           {
+           PORT10_OMR |= ((1<<PCL2) | (1<<PCL1));
+
+           if( SW_state_debounce != 0 && SW_state_debounce == 0x03)
+               state_cnt = 1;
+       }
+
+       if(state_cnt == 1)
+       {
+
                PORT10_OMR |= ((1<<PS1) | (1<<PS2));           // Toggle LED RED AND BLUE
 
                for(cycle = 0; cycle < DELAY_250MS ; cycle++); // Delay
@@ -172,8 +179,16 @@ int core0_main(void)
 
                for(cycle = 0; cycle < DELAY_250MS ; cycle++); // Delay
 
+               state_cnt = 2;
+       }
 
-           }
+       if(state_cnt == 2)
+       {
+           if( SW_state_debounce != 0 && SW_state_debounce == 0x03)
+               state_cnt = 0;
+           else
+               state_cnt = 1;
+
        }
     }
    return (1);
@@ -184,6 +199,9 @@ int core0_main(void)
 __interrupt( 0x0F ) __vector_table( 0 )
 void CCU61_T12_ISR(void)
 {
+    if(state_cnt == 1)
+        return;
+
     SW1_prev = SW1_curr;
     SW1_curr = (PORT02_IN & (1<<P0)) == 0;
     SW2_prev = SW2_curr;
@@ -202,13 +220,7 @@ void CCU61_T12_ISR(void)
     else if( SW1_cnt < 9 )
         SW2_cnt ++;
     else
-        {
         SW2_debounce = SW2_curr;
-        ++count_index;
-        }
-
-
-
 
     irq_timer = 1;
 }
