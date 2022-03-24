@@ -28,6 +28,7 @@
 #include "IfxCpu.h"
 #include "IfxScuWdt.h"
 #include "my_lib.h"
+#include "stdio.h"
 
 #define PORT10_BASE     (0xF003B000)
 #define PORT10_IOCR0    (*(volatile unsigned int*)(PORT10_BASE + 0x10))
@@ -53,7 +54,7 @@
 #define P0              0
 #define P2              2
 
-#define SYSTEM_TIMER_0_31_0 *(volatile unsigned int *)(0xF0000000+0x10)
+//#define SYSTEM_TIMER_0_31_0 *(volatile unsigned int *)(0xF0000000+0x10)
 #define DELAY_250MS (5000000 * 25 / 30)
 
 volatile unsigned int SW1_curr;
@@ -72,8 +73,10 @@ volatile unsigned int SW_state_cnt;
 volatile unsigned int SW_state_debounce;
 
 volatile unsigned char irq_timer;
-volatile unsigned int count_index;
-
+volatile unsigned int check_count;
+volatile unsigned int check_state;
+volatile unsigned int led_state;
+volatile unsigned int check_state_intr;
 IfxCpu_syncEvent g_cpuSyncEvent = 0;
 
 /* Initialize LED (RED & BLUE) */
@@ -101,12 +104,16 @@ void init_Switch(void)
     PORT02_IOCR0 &= ~((0x1F) << PC2);
 
     Set PC2 with push-up(5b0xx10)
-   PORT02_IOCR0 |= ((0x2) << PC2); //**
+   PORT02_IOCR0 |= ((0x2) << PC2);
 }*/
 
 int core0_main(void)
 {
+    check_count=0;
+    check_state =0;
+    led_state=0;
     IfxCpu_enableInterrupts();
+  //  check_state_intr=0;
     
     /* !!WATCHDOG0 AND SAFETY WATCHDOG ARE DISABLED HERE!!
      * Enable the watchdogs and service them periodically if it is required
@@ -119,10 +126,9 @@ int core0_main(void)
     IfxCpu_waitEvent(&g_cpuSyncEvent, 1);
     
     volatile int cycle;
-    volatile int system_tick;
 
     init_LED();
-    count_index =1;
+
     SW1_curr = 0;
     SW1_prev = 0;
     SW1_cnt = 0;
@@ -135,6 +141,7 @@ int core0_main(void)
     SW_state_prev = 0;
     SW_state_cnt = 0;
     SW_state_debounce = 0;
+    check_state_intr = 1;
 
     irq_timer = 0;
 
@@ -145,36 +152,116 @@ int core0_main(void)
     {
 
         // 100ms
-       irq_timer = 0;
-       while( irq_timer == 0 );
-
-       // FIXME: state debounce
-       SW_state_prev = SW_state_curr;
-       SW_state_curr = (SW2_debounce<<1) | (SW1_debounce<<0);
-
-       if( SW_state_curr != SW_state_prev )
-           SW_state_cnt = 0;
-       else if( SW_state_cnt < 10 )
-           SW_state_cnt ++;
-       else
-           SW_state_debounce = SW_state_curr;
+        irq_timer = 0;
+        while( irq_timer == 0 );
 
 
-       if( SW_state_debounce != 0 && SW_state_debounce == 0x03)
+        /*
+         * 스위치에 상태에 따라 check_state 설정
+         * 디바운스/인터럽트 과정 상태에 따라 check_state_intr 설정
+         */
+
+        if( SW_state_debounce != 0 )
+        {
+            if     ( SW_state_debounce == 0x01 )  {
+                if(check_state_intr==1 && check_state== 0 && (led_state==0) ){  // debounce 과정이 아니고 & 동시에 눌리고 & led 가 켜져있으면
+                    check_state_intr =0;
+                    check_state= 1;
+                }
+            } else if ( SW_state_debounce == 0x02 ){
+
+                if(check_state_intr==1 && check_state== 0 && (led_state==0) ){  // debounce 과정이 아니고 & 동시에 눌리고 & led 가 켜져있으면
+                    check_state_intr =0;
+                    check_state= 2;
+                }
+
+            } else if ( SW_state_debounce == 0x03 ){ // SW1 & SW1 동시에 눌렸을 때
+                if(check_state_intr==1 && check_state== 3 && (led_state==1) ){  // debounce 과정이 아니고 & 동시에 눌리고 & led 가 켜져있으면
+                    check_state_intr =0;    // debounce 과정이다 (0)
+                    check_state= 0;         // check_state 0 - led off
+                }else if (check_state_intr==1 && check_state == 0 &&(led_state==0) ){
+                     check_state_intr =0;
+                     check_state= 3;         // check_state 3 - led on
+                }
+            } else { // SW_state_debounce = 0 아무것도 안 눌린 상태
+                check_state_intr = 1; // debounce 과정이 아님 (1)
+            }
+
+        }else
+            check_state_intr = 1; // debounce 과정이 아님 (1)
+
+
+
+        /*
+       if( SW_state_debounce != 0 && SW_state_debounce == 0x03  ) // SW1 & SW1 동시에 눌렸을 때
        {
-          while(1)
-           {
-               PORT10_OMR |= ((1<<PS1) | (1<<PS2));           // Toggle LED RED AND BLUE
-
-               for(cycle = 0; cycle < DELAY_250MS ; cycle++); // Delay
-
-               PORT10_OMR |= ((1<<PCL2) | (1<<PCL1));
-
-               for(cycle = 0; cycle < DELAY_250MS ; cycle++); // Delay
-
-
+           if(check_state_intr==1 && check_state== 3 && (led_state==1) ){  // debounce 과정이 아니고 & 동시에 눌리고 & led 가 켜져있으면
+               check_state_intr =0;    // debounce 과정이다 (0)
+               check_state= 0;         // check_state 0 - led off
+           }else if (check_state_intr==1 && check_state == 0 &&(led_state==0) ){
+                check_state_intr =0;
+                check_state= 3;         // check_state 3 - led on
            }
+
+       }else{ // SW_state_debounce = 0 아무것도 안 눌린 상태
+           check_state_intr = 1; // debounce 과정이 아님 (1)
        }
+        */
+
+       /*
+        * check_state 에 따라 led 동작 부분 구현
+        */
+
+        switch (check_state){
+        case 1:
+            led_state = 0;
+            for(int a=0;a<8;a++){
+                PORT10_OMR |= ((1<<PS2));           // Toggle LED RED AND BLUE
+                for(cycle = 0; cycle < DELAY_250MS ; cycle++); // Delay
+                PORT10_OMR |= ((1<<PCL2));
+                for(cycle = 0; cycle < DELAY_250MS ; cycle++); // Delay
+                check_state = 0;
+            }
+            break;
+
+        case 2:
+            led_state = 0;
+            for(int a=0;a<8;a++){
+                PORT10_OMR |= ((1<<PS1));           // Toggle LED RED AND BLUE
+                for(cycle = 0; cycle < DELAY_250MS ; cycle++); // Delay
+                PORT10_OMR |= ((1<<PCL1));
+                for(cycle = 0; cycle < DELAY_250MS ; cycle++); // Delay
+                check_state = 0;
+            }
+            break;
+
+        case 3:
+            led_state = 1;
+            PORT10_OMR |= ((1<<PS1) | (1<<PS2));           // Toggle LED RED AND BLUE
+            for(cycle = 0; cycle < DELAY_250MS ; cycle++); // Delay
+            PORT10_OMR |= ((1<<PCL2) | (1<<PCL1));
+            for(cycle = 0; cycle < DELAY_250MS ; cycle++); // Delay
+            break;
+
+        default:
+            PORT10_OMR |= ((1<<PCL2) | (1<<PCL1));
+            led_state = 0;
+        }
+
+
+       /*
+       if(check_state==3){
+            led_state = 1;
+            PORT10_OMR |= ((1<<PS1) | (1<<PS2));           // Toggle LED RED AND BLUE
+            for(cycle = 0; cycle < DELAY_250MS ; cycle++); // Delay
+            PORT10_OMR |= ((1<<PCL2) | (1<<PCL1));
+            for(cycle = 0; cycle < DELAY_250MS ; cycle++); // Delay
+       }else{
+           PORT10_OMR |= ((1<<PCL2) | (1<<PCL1));
+           led_state = 0;
+       }
+       */
+
     }
    return (1);
 }
@@ -192,23 +279,30 @@ void CCU61_T12_ISR(void)
     // FIXME: SW1, SW2 software debounce for 1 second
     if( SW1_curr != SW1_prev )
         SW1_cnt = 0;
-    else if( SW1_cnt < 9 )
+    else if( SW1_cnt < 3 )
         SW1_cnt ++;
     else
         SW1_debounce = SW1_curr;
 
     if( SW2_curr != SW2_prev )
         SW2_cnt = 0;
-    else if( SW1_cnt < 9 )
+    else if( SW2_cnt < 3 )
         SW2_cnt ++;
     else
-        {
         SW2_debounce = SW2_curr;
-        ++count_index;
-        }
+
+    SW_state_prev = SW_state_curr;
+            SW_state_curr = (SW2_debounce<<1) | (SW1_debounce<<0);
+
+            if( SW_state_curr != SW_state_prev )
+                SW_state_cnt = 0;
+            else if( SW_state_cnt < 3 )
+                SW_state_cnt ++;
+            else
+                SW_state_debounce = SW_state_curr;
 
 
-
+    //SW_state_curr = (SW2_debounce<<1) | (SW1_debounce<<0) ;
 
     irq_timer = 1;
 }
